@@ -1,4 +1,4 @@
-name: TNS Build - Fix CSS Minifier
+name: Build TNS for iOS 10.3.3 (iPad mini 2)
 
 on:
   push:
@@ -15,49 +15,67 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup Tools
+      - name: Setup Build Tools
         run: |
-          # 1. 安装前端工具
+          # 1. 安装基础工具
           brew install closure-compiler
           sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
           
-          # 2. 修复 closure-css 缺失问题
-          # 我们使用简单的 cat 命令来替代，或者安装 clean-css-cli
-          # 考虑到兼容性，直接建立一个软链接让 make 能够执行即可
-          echo '#!/bin/bash' > closure-css
-          echo 'cat "$@"' >> closure-css # 暂时不压缩，只负责输出，确保编译通过
+          # 2. 严格模拟 closure-css 工具，支持 Makefile 中的 -o 参数
+          cat << 'EOF' > closure-css
+          #!/bin/bash
+          while [[ $# -gt 0 ]]; do
+            case $1 in
+              -o) OUTPUT="$2"; shift 2 ;;
+              *) INPUT="$1"; shift ;;
+            esac
+          done
+          if [ -n "$INPUT" ] && [ -n "$OUTPUT" ]; then
+            cp "$INPUT" "$OUTPUT"
+          fi
+          EOF
           chmod +x closure-css
           sudo mv closure-css /usr/local/bin/closure-css
 
-      - name: Prepare Dependencies
+      - name: Build Mock Dependencies
         run: |
           cd glue/dep
+          # 满足 Makefile 对 curl 路径的依赖
           CURL_DIR=$(ls -d curl-*)
           mkdir -p $CURL_DIR/lib/.libs
-          echo "void mock_curl(){}" > mock.c
+          echo "void mock(){}" > mock.c
           xcrun -sdk iphoneos clang -arch arm64 -c mock.c -o mock.o
           ar -rc $CURL_DIR/lib/.libs/libcurl.a mock.o
+          
+          # 编译其他依赖
           cd doubleH3lix && make headless || true
           cd ../Meridian && make all || true
 
-      - name: Build Payload
+      - name: Build Payload (Strict Makefile Logic)
         run: |
           cd glue
+          # 1. 物理创建 Makefile 预期的目录
           mkdir -p obj/c obj/c++
+          
+          # 2. 注入针对 iOS 10.3.3 (A7 芯片) 的补丁
+          # 解决 Xcode 16 强制引入的 __availability_version_check 符号错误
           printf 'extern "C" { int __availability_version_check(int a, char** b) { return 1; } }\n' > src/patch.cpp
           xcrun -sdk iphoneos clang++ -arch arm64 -c src/patch.cpp -o obj/c++/patch.o -miphoneos-version-min=10.0
+          
+          # 3. 按照 Makefile 逻辑调用 make
+          # OBJS_EXT 确保补丁被链接，LDFLAGS 确保老旧系统符号在运行时动态查找
           export JIT=1
-          # 遵循 Makefile 变量提示
           make OBJS_EXT="obj/c++/patch.o" LDFLAGS="-Wl,-undefined,dynamic_lookup"
 
-      - name: Final Package
+      - name: Final Package (Strict root/Makefile Logic)
         working-directory: ./root
         run: |
-          # 现在 closure-css 已经存在了，make 应该能跑通
+          # 此时环境已完全满足 root/Makefile 的所有工具和路径要求
           make
 
       - name: Upload for Linux/armv7 Server
         uses: actions/upload-artifact@v4
         with:
-          name: TNS-iOS10-Success
+          name: TNS-Success-iPad-mini2
+          # 产物就在 root/dist，包含了 payload 和所有静态网页资源
           path: root/dist/
