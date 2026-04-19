@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    # 必须在 macOS 上编译，即使分发服务器是 Linux
+    # 必须在 macOS 上编译以调用 iOS SDK
     runs-on: macos-latest
 
     steps:
@@ -18,52 +18,69 @@ jobs:
 
       - name: Setup Build Environment
         run: |
-          # 安装前端处理工具
+          # 1. 安装前端压缩工具
           brew install closure-compiler
           sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
           
-          # 存储 SDK 路径
-          echo "SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
+          # 2. 获取并存储 iOS SDK 路径
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK_PATH=$SDK_PATH" >> $GITHUB_ENV
 
-      - name: Build Curl (ARM)
+      # 第一步：编译 curl (针对 iOS ARM)
+      - name: Build Curl
         run: |
           CURL_DIR=$(ls -d glue/dep/curl-*)
           cd $CURL_DIR
           export CC="xcrun -sdk iphoneos clang"
           export CFLAGS="-miphoneos-version-min=10.0 -isysroot ${{ env.SDK_PATH }}"
-          ./configure --host=arm-apple-darwin --with-darwinssl --enable-static --disable-shared --with-random=/dev/urandom CC="$CC"
+          
+          ./configure --host=arm-apple-darwin \
+                      --with-darwinssl \
+                      --enable-static \
+                      --disable-shared \
+                      --with-random=/dev/urandom \
+                      CC="$CC"
+          
           make -j$(sysctl -n hw.ncpu)
 
-      - name: Build Libraries (DoubleH3lix & Meridian)
+      # 第二步：编译依赖库 (DoubleH3lix & Meridian)
+      - name: Build Dependencies
         run: |
+          # 编译 DoubleH3lix 静态库
           cd glue/dep/doubleH3lix && make headless
+          # 编译 Meridian 静态库
           cd ../Meridian && make all
 
-      # 核心修复：手动注入缺失的符号定义，解决链接报错
+      # 第三步：核心修复 - 注入缺失的符号定义
+      # 这是解决 "__availability_version_check" 报错的关键
       - name: Patch Missing Symbols
         run: |
           cd glue
-          # 在 main.mm 开头注入符号定义，绕过新版编译器对 __availability_version_check 的依赖
+          # 在 main.mm 开头注入 C 函数定义，骗过链接器
+          # 这样就不再依赖 libclang_rt.ios.a 中变动的内部实现
           sed -i '' '1i\
           extern "C" int __availability_version_check(int argc, char **argv) { return 1; }\
           ' src/main.mm
 
+      # 第四步：编译 Payload
       - name: Build Payload
         run: |
           cd glue
           export JIT=1
-          # 此时编译出的 payload 是给手机跑的 ARM 架构
+          # 此时链接器会在 main.o 中直接找到符号，不会报错
           make
 
-      - name: Final Build (Frontend & Packaging)
+      # 第五步：最终整合打包 (root 目录)
+      - name: Final Packaging for Nginx
         working-directory: ./root
         run: |
-          # 处理 HTML/JS，并将 payload 复制到 dist 目录
+          # 处理 HTML/JS 并生成最终的 dist 目录
           make
 
-      - name: Upload dist for Linux Nginx
+      # 第六步：上传产物
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: TNS-Web-Dist
-          # 这里的产物是跨平台的静态网页资源，可直接放进 amd64 Linux 的 nginx
+          # 这里的文件夹内容直接拷贝到 Linux/amd64 服务器的 Nginx 根目录即可
           path: root/dist/
