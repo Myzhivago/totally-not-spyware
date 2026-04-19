@@ -1,1 +1,74 @@
+name: Build Totally Not Spyware (armv7)
 
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Environment
+        run: |
+          # 安装前端处理工具
+          brew install closure-compiler
+          sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
+          # 确保有 autoconf/libtool 用于 curl
+          brew install autoconf automake libtool
+
+      # 1. 编译 curl (armv7)
+      # /glue/Makefile 依赖 libcurl.a，必须先行编译
+      - name: Build Curl (armv7)
+        run: |
+          CURL_DIR=$(ls -d glue/dep/curl-*)
+          cd $CURL_DIR
+          export CFLAGS="-arch armv7 -miphoneos-version-min=7.0"
+          ./configure --host=armv7-apple-darwin \
+                      --with-darwinssl \
+                      --enable-static \
+                      --disable-shared
+          make -j$(sysctl -n hw.ncpu)
+
+      # 2. 编译 DoubleH3lix (armv7)
+      - name: Build DoubleH3lix
+        run: |
+          cd glue/dep/doubleH3lix
+          # 强制指定架构为 armv7
+          make headless ARCH=armv7
+
+      # 3. 编译 Meridian (armv7)
+      - name: Build Meridian
+        run: |
+          cd glue/dep/Meridian
+          # 通过变量覆盖 Makefile 中的 arm64
+          make all IGCC="xcrun -sdk iphoneos clang++ -arch armv7"
+
+      # 4. 编译 Payload (glue)
+      - name: Build Payload
+        run: |
+          cd glue
+          export JIT=1
+          # 链接前几步生成的 armv7 静态库
+          make IGXX="xcrun -sdk iphoneos clang++ -arch armv7"
+
+      # 5. 最终打包 (root)
+      - name: Final Build for nginx
+        working-directory: ./root
+        run: |
+          # 根目录的 Makefile 会将 payload 复制到 dist/，并处理 HTML/JS/CSS
+          make
+
+      # 6. 上传产物
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TNS-armv7-dist
+          # 这个文件夹就是你要放进 nginx root 目录的内容
+          path: root/dist/
