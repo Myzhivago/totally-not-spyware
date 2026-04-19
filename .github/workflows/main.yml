@@ -1,4 +1,4 @@
-name: Test Payload Build (iOS 10.3.3)
+name: Test Payload Build (Fast Track)
 
 on:
   push:
@@ -20,18 +20,21 @@ jobs:
           brew install closure-compiler
           sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
 
-      # 绕过真正的 curl 编译，仅创建一个伪造的 libcurl.a 结构让链接器闭嘴
-      # 如果 payload 链接通过，我们后续再补全真正的 curl
-      - name: Mock Dependencies
+      # 伪造 curl 依赖：创建一个包含空函数的静态库，骗过链接器
+      - name: Mock Curl Dependency
         run: |
           cd glue/dep
-          # 创建 curl 目录结构
           CURL_DIR=$(ls -d curl-*)
           mkdir -p $CURL_DIR/lib/.libs
-          # 创建一个空的静态库文件，骗过链接器的路径检查
-          ar -rc $CURL_DIR/lib/.libs/libcurl.a 
           
-          # 尝试编译其他必要的静态库
+          # 创建一个空的 c 文件并编译为 arm64 对象文件
+          echo "void mock_curl_func() {}" > mock.c
+          xcrun -sdk iphoneos clang -arch arm64 -c mock.c -o mock.o
+          
+          # 将对象文件打包进静态库
+          ar -rc $CURL_DIR/lib/.libs/libcurl.a mock.o
+          
+          # 尝试编译其他必要的静态库（如果报错也继续，以便测试 payload）
           cd doubleH3lix && make headless || true
           cd ../Meridian && make all || true
 
@@ -41,15 +44,13 @@ jobs:
           # 1. 物理创建输出目录
           mkdir -p obj/c obj/c++
           
-          # 2. 注入针对 iOS 10 的符号补丁
-          # 解决 Xcode 16 强制引入的 __availability_version_check 报错
+          # 2. 注入针对 iOS 10.3.3 的补丁
           printf 'extern "C" { int __availability_version_check(int a, char** b) { return 1; } int _availability_version_check(int a, char** b) { return 1; } }\n' > src/compat.cpp
           
-          # 3. 预编译补丁
+          # 3. 预编译补丁 (iOS 10 兼容模式)
           xcrun -sdk iphoneos clang++ -arch arm64 -c src/compat.cpp -o obj/c++/compat.o -miphoneos-version-min=10.0
           
-          # 4. 修改 Makefile 注入补丁并强制允许动态查找符号
-          # 这样即使缺失一些系统函数，链接器也会通过，留到 iPad 运行时由 iOS 10 提供
+          # 4. 修改 Makefile：注入补丁对象并允许动态符号查找
           sed -i '' 's/$(CXX) $(LDFLAGS) -o $@/$(CXX) $(LDFLAGS) obj\/c++\/compat.o -Wl,-undefined,dynamic_lookup -o $@/g' Makefile
           
           # 5. 执行 Payload 编译
@@ -59,10 +60,11 @@ jobs:
       - name: Package Dist
         working-directory: ./root
         run: |
+          # 即使前面的步骤产生的是 mock payload，也可以测试打包流程
           make
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Payload-Test-Result
+          name: Payload-Link-Test
           path: root/dist/
