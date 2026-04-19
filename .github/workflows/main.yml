@@ -1,4 +1,4 @@
-name: TNS Full Build (Strict Makefile.arm Logic)
+name: TNS Build for iPad mini 2 (iOS 10.3.3)
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
 
       - name: Setup Tools
         run: |
-          # 1. 模拟 Final Package 所需的 CSS/JS 工具
+          # 模拟 Final Package 缺失的 CSS/JS 工具，确保打包流程不中断
           cat << 'EOF' > /usr/local/bin/closure-css
           #!/bin/bash
           while [[ $# -gt 0 ]]; do case $1 in -o) OUT="$2"; shift 2 ;; *) IN="$1"; shift ;; esac; done
@@ -32,45 +32,61 @@ jobs:
           EOF
           chmod +x /usr/local/bin/closure-js
 
-      # 2. 严格按照 Makefile.arm 编译 Curl (针对 iOS 10.3.3)
-      - name: Build Curl using Makefile.arm
+      # 1. 核心步骤：交叉编译 Curl (针对 iOS 10 / arm64)
+      - name: Build Curl 7.61.0
         run: |
-          cd glue/dep/curl-*
+          cd glue/dep/curl-7.61.0
+          # 获取 iOS SDK 路径
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           
-          # 提取作者在 Makefile.arm 中定义的变量，并注入现代 SDK 路径
-          # 我们锁定 arm64 架构以适配 iPad mini 2
-          make -f Makefile.arm \
-            CC="xcrun -sdk iphoneos clang" \
-            CFLAGS="-arch arm64 -miphoneos-version-min=10.0 -isysroot $SDK_PATH" \
-            LDFLAGS="-arch arm64 -isysroot $SDK_PATH" \
-            -j$(sysctl -n hw.ncpu)
+          # 设置针对 iPad mini 2 (A7/arm64) 的编译器环境变量
+          export CC="xcrun -sdk iphoneos clang"
+          export CFLAGS="-arch arm64 -miphoneos-version-min=10.0 -isysroot $SDK_PATH"
+          export LDFLAGS="-arch arm64 -isysroot $SDK_PATH"
+          
+          # 运行 configure，注入 ac_cv 变量强行通过网络连接函数测试
+          ./configure --host=arm-apple-darwin \
+                      --with-darwinssl \
+                      --enable-static \
+                      --disable-shared \
+                      --disable-manual \
+                      --disable-ldap --disable-ldaps \
+                      ac_cv_func_connect=yes \
+                      ac_cv_func_gethostbyname=yes \
+                      ac_cv_func_getaddrinfo=yes \
+                      ac_cv_func_socket=yes \
+                      CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
+          
+          make -j$(sysctl -n hw.ncpu)
 
+      # 2. 编译越狱组件依赖
       - name: Build Libraries
         run: |
           cd glue/dep/doubleH3lix && make headless || true
           cd ../Meridian && make all || true
 
+      # 3. 编译 Payload 并注入 iOS 10.3.3 补丁
       - name: Build Payload
         run: |
           cd glue
           mkdir -p obj/c obj/c++
           
-          # 注入针对 iOS 10.3.3 的补丁 (解决 Xcode 16 符号检查问题)
+          # 解决新版 Xcode 在 iOS 10 系统上缺失的 __availability_version_check 符号
           printf 'extern "C" { int __availability_version_check(int a, char** b) { return 1; } }\n' > src/patch.cpp
           xcrun -sdk iphoneos clang++ -arch arm64 -c src/patch.cpp -o obj/c++/patch.o -miphoneos-version-min=10.0
           
           export JIT=1
-          # 按照 glue/Makefile 逻辑，合并刚才编译的 curl 静态库
+          # 链接刚才编译好的真实 libcurl.a
           make OBJS_EXT="obj/c++/patch.o" LDFLAGS="-Wl,-undefined,dynamic_lookup"
 
+      # 4. 按照 root/Makefile 逻辑打包，准备分发到 Linux/armv7 服务器
       - name: Final Package
         working-directory: ./root
         run: |
           make
 
-      - name: Upload for Linux/armv7 Server
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: TNS-Strict-Success
+          name: TNS-iOS10-Success
           path: root/dist/
