@@ -1,4 +1,4 @@
-name: TNS Build for iPad mini 2 (iOS 10.3.3) & ARM Server
+name: TNS Build Nuclear Fix (iPad mini 2)
 
 on:
   push:
@@ -20,55 +20,60 @@ jobs:
           brew install closure-compiler
           sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
 
-      # 1. 编译针对 iOS 10 的 Curl - 强制跳过 gethostbyname 检测
+      # 1. 编译 Curl - 使用最激进的预设参数绕过检测
       - name: Build Curl
         run: |
           cd glue/dep/curl-*
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           export CC="xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=10.0 -isysroot $SDK_PATH"
           
-          # 关键：通过环境变量强行通过 configure 的网络库检测
+          # 这一串环境变量是核心，直接告诉脚本所有网络函数都存在，不需要你测试
           ./configure --host=arm-apple-darwin \
                       --with-darwinssl \
                       --enable-static \
                       --disable-shared \
                       --disable-manual \
+                      --disable-ldap --disable-ldaps \
+                      ac_cv_func_connect=yes \
                       ac_cv_func_gethostbyname=yes \
                       ac_cv_func_getaddrinfo=yes \
+                      ac_cv_func_socket=yes \
+                      ac_cv_func_recv=yes \
+                      ac_cv_func_send=yes \
                       CC="$CC"
           
           make -j$(sysctl -n hw.ncpu)
 
-      # 2. 编译 iOS 10 的 Meridian 和 doubleH3lix
+      # 2. 编译依赖库
       - name: Build Libraries
         run: |
           cd glue/dep/doubleH3lix && make headless
           cd ../Meridian && make all
 
-      # 3. 核心补丁：修复 iOS 10.3.3 的 __availability_version_check
+      # 3. 修复 Payload 并注入 iOS 10 兼容补丁
       - name: Patch and Build Payload
         run: |
           cd glue
           mkdir -p obj/c obj/c++
           
-          # 注入 C 链接符号定义
+          # 定义缺失的符号，防止 Xcode 16 的版本检查错误
           printf 'extern "C" { int __availability_version_check(int a, char** b) { return 1; } int _availability_version_check(int a, char** b) { return 1; } }\n' > src/compat.cpp
           xcrun -sdk iphoneos clang++ -arch arm64 -c src/compat.cpp -o obj/c++/compat.o -miphoneos-version-min=10.0
           
-          # 物理修改 Makefile，确保补丁链接且不因为未定义符号报错
+          # 修改 Makefile，强制链接补丁文件并允许符号动态查找
           sed -i '' 's/$(CXX) $(LDFLAGS) -o $@/$(CXX) $(LDFLAGS) obj\/c++\/compat.o -Wl,-undefined,dynamic_lookup -o $@/g' Makefile
           
           export JIT=1
           make
 
-      # 4. 生成静态资源 (这些资源将被放在 Linux/armv7 Nginx 上)
+      # 4. 打包产物 (用于 Linux/armv7 上的 Nginx 分发)
       - name: Final Package
         working-directory: ./root
         run: |
           make
 
-      - name: Upload Artifacts
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: TNS-iOS10-Success
+          name: TNS-Success-iPad-mini2
           path: root/dist/
