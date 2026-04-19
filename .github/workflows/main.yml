@@ -1,4 +1,4 @@
-name: Build Totally Not Spyware (iOS ARM)
+name: Build Totally Not Spyware (for Linux/amd64 Nginx)
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
 
 jobs:
   build:
+    # 必须在 macOS 上编译，即使分发服务器是 Linux
     runs-on: macos-latest
 
     steps:
@@ -17,12 +18,14 @@ jobs:
 
       - name: Setup Build Environment
         run: |
+          # 安装前端处理工具
           brew install closure-compiler
           sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "SDK_PATH=$SDK_PATH" >> $GITHUB_ENV
+          
+          # 存储 SDK 路径
+          echo "SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
 
-      - name: Build Curl
+      - name: Build Curl (ARM)
         run: |
           CURL_DIR=$(ls -d glue/dep/curl-*)
           cd $CURL_DIR
@@ -31,39 +34,36 @@ jobs:
           ./configure --host=arm-apple-darwin --with-darwinssl --enable-static --disable-shared --with-random=/dev/urandom CC="$CC"
           make -j$(sysctl -n hw.ncpu)
 
-      - name: Build DoubleH3lix
+      - name: Build Libraries (DoubleH3lix & Meridian)
         run: |
-          cd glue/dep/doubleH3lix
-          make headless
+          cd glue/dep/doubleH3lix && make headless
+          cd ../Meridian && make all
 
-      - name: Build Meridian
-        run: |
-          cd glue/dep/Meridian
-          make all
-
-      # 关键步骤：修复 Undefined symbols __availability_version_check
+      # 核心修复：手动注入缺失的符号定义，解决链接报错
       - name: Patch Missing Symbols
         run: |
           cd glue
-          # 在 main.mm 开头注入符号定义，彻底绕过链接错误
+          # 在 main.mm 开头注入符号定义，绕过新版编译器对 __availability_version_check 的依赖
           sed -i '' '1i\
-          extern "C" int _availability_version_check(int argc, char **argv) { return 1; }\
+          extern "C" int __availability_version_check(int argc, char **argv) { return 1; }\
           ' src/main.mm
 
       - name: Build Payload
         run: |
           cd glue
           export JIT=1
-          # 即使不手动指定 libclang_rt 路径，由于上面定义了符号，这里也会通过
+          # 此时编译出的 payload 是给手机跑的 ARM 架构
           make
 
-      - name: Final Build for Nginx
+      - name: Final Build (Frontend & Packaging)
         working-directory: ./root
         run: |
+          # 处理 HTML/JS，并将 payload 复制到 dist 目录
           make
 
-      - name: Upload Artifacts
+      - name: Upload dist for Linux Nginx
         uses: actions/upload-artifact@v4
         with:
-          name: TNS-iOS-Build
+          name: TNS-Web-Dist
+          # 这里的产物是跨平台的静态网页资源，可直接放进 amd64 Linux 的 nginx
           path: root/dist/
