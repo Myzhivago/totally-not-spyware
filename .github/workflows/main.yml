@@ -1,4 +1,4 @@
-name: Test Payload Build (Fast Track)
+name: Build Payload (Following Makefile Logic)
 
 on:
   push:
@@ -20,51 +20,47 @@ jobs:
           brew install closure-compiler
           sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
 
-      # 伪造 curl 依赖：创建一个包含空函数的静态库，骗过链接器
-      - name: Mock Curl Dependency
+      # 按照 Makefile 提示，先准备好依赖的静态库路径
+      - name: Prepare Dependencies
         run: |
           cd glue/dep
+          # 1. 模拟 curl 静态库路径 (Makefile 预期在 curl-*/lib/.libs/libcurl.a)
           CURL_DIR=$(ls -d curl-*)
           mkdir -p $CURL_DIR/lib/.libs
-          
-          # 创建一个空的 c 文件并编译为 arm64 对象文件
-          echo "void mock_curl_func() {}" > mock.c
+          echo "void mock_curl(){}" > mock.c
           xcrun -sdk iphoneos clang -arch arm64 -c mock.c -o mock.o
-          
-          # 将对象文件打包进静态库
           ar -rc $CURL_DIR/lib/.libs/libcurl.a mock.o
           
-          # 尝试编译其他必要的静态库（如果报错也继续，以便测试 payload）
+          # 2. 编译 Makefile 提示的其他依赖
           cd doubleH3lix && make headless || true
           cd ../Meridian && make all || true
 
-      - name: Patch and Build Payload
+      # 按照 Makefile 提示，将对象文件放在 obj/ 目录下
+      - name: Build Payload
         run: |
           cd glue
-          # 1. 物理创建输出目录
+          # Makefile 编译提示：mkdir -p obj/c obj/c++
           mkdir -p obj/c obj/c++
           
-          # 2. 注入针对 iOS 10.3.3 的补丁
-          printf 'extern "C" { int __availability_version_check(int a, char** b) { return 1; } int _availability_version_check(int a, char** b) { return 1; } }\n' > src/compat.cpp
+          # 按照 Makefile 的编译器调用习惯，预编译我们的补丁文件
+          # 解决 iPad mini 2 运行 iOS 10.3.3 时的符号检查问题
+          printf 'extern "C" { int __availability_version_check(int a, char** b) { return 1; } }\n' > src/patch.cpp
+          xcrun -sdk iphoneos clang++ -arch arm64 -c src/patch.cpp -o obj/c++/patch.o -miphoneos-version-min=10.0
           
-          # 3. 预编译补丁 (iOS 10 兼容模式)
-          xcrun -sdk iphoneos clang++ -arch arm64 -c src/compat.cpp -o obj/c++/compat.o -miphoneos-version-min=10.0
-          
-          # 4. 修改 Makefile：注入补丁对象并允许动态符号查找
-          sed -i '' 's/$(CXX) $(LDFLAGS) -o $@/$(CXX) $(LDFLAGS) obj\/c++\/compat.o -Wl,-undefined,dynamic_lookup -o $@/g' Makefile
-          
-          # 5. 执行 Payload 编译
+          # 按照 Makefile 的变量提示进行设置：
+          # 1. 将 patch.o 加入 OBJS 列表
+          # 2. 在 LDFLAGS 中注入 -Wl,-undefined,dynamic_lookup
           export JIT=1
-          make
+          make OBJS_EXT="obj/c++/patch.o" LDFLAGS="-Wl,-undefined,dynamic_lookup"
 
-      - name: Package Dist
+      - name: Final Package
         working-directory: ./root
         run: |
-          # 即使前面的步骤产生的是 mock payload，也可以测试打包流程
+          # 按照 root 目录的 Makefile 进行打包
           make
 
-      - name: Upload Artifacts
+      - name: Upload for Linux/armv7 Server
         uses: actions/upload-artifact@v4
         with:
-          name: Payload-Link-Test
+          name: TNS-Payload-Result
           path: root/dist/
