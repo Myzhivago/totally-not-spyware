@@ -3,8 +3,6 @@ name: Build Totally Not Spyware (armv7)
 on:
   push:
     branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
@@ -19,17 +17,14 @@ jobs:
 
       - name: Setup Build Environment
         run: |
-          # 1. 安装前端工具
+          # 1. 安装前端压缩工具
           brew install closure-compiler
           sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
           
-          # 2. 获取 iOS SDK 路径并存入环境变量
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "SDK_PATH=$SDK_PATH" >> $GITHUB_ENV
-          
-          # 3. 获取编译器路径
-          CLANG_PATH=$(xcrun --sdk iphoneos --find clang)
-          echo "CLANG_PATH=$CLANG_PATH" >> $GITHUB_ENV
+          # 2. 预存 SDK 和 编译器路径到环境变量
+          echo "SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
+          echo "CLANG=$(xcrun --sdk iphoneos --find clang)" >> $GITHUB_ENV
+          echo "CLANGXX=$(xcrun --sdk iphoneos --find clang++)" >> $GITHUB_ENV
 
       # 第一步：编译 curl (针对 armv7)
       - name: Build Curl (armv7)
@@ -37,12 +32,12 @@ jobs:
           CURL_DIR=$(ls -d glue/dep/curl-*)
           cd $CURL_DIR
           
-          # 强制指定编译器和所有标志
-          export CC="${{ env.CLANG_PATH }}"
+          # 核心修复：定义交叉编译环境
+          export CC="${{ env.CLANG }}"
           export CFLAGS="-arch armv7 -isysroot ${{ env.SDK_PATH }} -miphoneos-version-min=7.0"
           export LDFLAGS="-arch armv7 -isysroot ${{ env.SDK_PATH }}"
           
-          # 注意：cross_compiling=yes 强制跳过运行测试，这是解决 exit 77 的核心
+          # cross_compiling=yes 是解决 exit 77 的关键，防止它尝试运行测试程序
           ./configure --host=armv7-apple-darwin \
                       --with-darwinssl \
                       --enable-static \
@@ -55,34 +50,35 @@ jobs:
           
           make -j$(sysctl -n hw.ncpu)
 
-      # 第二步：编译 DoubleH3lix (armv7)
-      - name: Build DoubleH3lix
+      # 第二步：编译 DoubleH3lix 静态库
+      - name: Build DoubleH3lix (armv7)
         run: |
           cd glue/dep/doubleH3lix
           make headless ARCH=armv7 CFLAGS="-arch armv7 -isysroot ${{ env.SDK_PATH }} -miphoneos-version-min=7.0"
 
-      # 第三步：编译 Meridian (armv7)
-      - name: Build Meridian
+      # 第三步：编译 Meridian 静态库
+      - name: Build Meridian (armv7)
         run: |
           cd glue/dep/Meridian
-          # 覆盖 Makefile 中的编译器和参数
-          make all IGCC="${{ env.CLANG_PATH }} -arch armv7 -isysroot ${{ env.SDK_PATH }} -miphoneos-version-min=7.0"
+          # 覆盖 Makefile 中的编译命令
+          make all IGCC="${{ env.CLANGXX }} -arch armv7 -isysroot ${{ env.SDK_PATH }} -miphoneos-version-min=7.0"
 
       # 第四步：编译 Payload (glue)
-      - name: Build Payload
+      - name: Build Payload (armv7)
         run: |
           cd glue
           export JIT=1
-          # 确保链接器也使用正确的 SDK 路径
-          make IGXX="${{ env.CLANG_PATH }} -arch armv7 -isysroot ${{ env.SDK_PATH }} -miphoneos-version-min=7.0"
+          # 确保链接阶段也使用正确的架构和 SDK
+          make IGXX="${{ env.CLANGXX }} -arch armv7 -isysroot ${{ env.SDK_PATH }} -miphoneos-version-min=7.0"
 
-      # 第五步：生成部署到 nginx 的产物 (root)
+      # 第五步：最终整合打包 (root)
       - name: Final Build for nginx
         working-directory: ./root
         run: |
+          # 此时会调用 closure-js 压缩资源并生成 dist 目录
           make
 
-      # 第六步：上传
+      # 第六步：上传产物
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
