@@ -1,4 +1,4 @@
-name: Build TNS for iOS 10.3.3 (iPad mini 2)
+name: Build TNS (Final Fix for JS/CSS)
 
 on:
   push:
@@ -17,11 +17,7 @@ jobs:
 
       - name: Setup Build Tools
         run: |
-          # 1. 安装基础工具
-          brew install closure-compiler
-          sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
-          
-          # 2. 严格模拟 closure-css 工具，支持 Makefile 中的 -o 参数
+          # 1. 模拟 closure-css：支持 -o 参数，直接复制文件
           cat << 'EOF' > closure-css
           #!/bin/bash
           while [[ $# -gt 0 ]]; do
@@ -30,52 +26,60 @@ jobs:
               *) INPUT="$1"; shift ;;
             esac
           done
-          if [ -n "$INPUT" ] && [ -n "$OUTPUT" ]; then
-            cp "$INPUT" "$OUTPUT"
-          fi
+          [ -n "$INPUT" ] && [ -n "$OUTPUT" ] && cp "$INPUT" "$OUTPUT"
           EOF
           chmod +x closure-css
           sudo mv closure-css /usr/local/bin/closure-css
 
+          # 2. 模拟 closure-js：支持 --js_output_file 参数
+          # 我们不进行 ECMASCRIPT 转换，直接把所有输入的 JS 文件合并输出
+          cat << 'EOF' > closure-js
+          #!/bin/bash
+          FILES=()
+          while [[ $# -gt 0 ]]; do
+            case $1 in
+              --js_output_file) OUTPUT="$2"; shift 2 ;;
+              -O|--language_in|--language_out) shift 2 ;; # 忽略这些压缩参数
+              *.js) FILES+=("$1"); shift ;;
+              *) shift ;;
+            esac
+          done
+          if [ ${#FILES[@]} -gt 0 ] && [ -n "$OUTPUT" ]; then
+            cat "${FILES[@]}" > "$OUTPUT"
+            echo "Mock closure-js: Merged ${#FILES[@]} files into $OUTPUT"
+          fi
+          EOF
+          chmod +x closure-js
+          sudo mv closure-js /usr/local/bin/closure-js
+
       - name: Build Mock Dependencies
         run: |
           cd glue/dep
-          # 满足 Makefile 对 curl 路径的依赖
           CURL_DIR=$(ls -d curl-*)
           mkdir -p $CURL_DIR/lib/.libs
           echo "void mock(){}" > mock.c
           xcrun -sdk iphoneos clang -arch arm64 -c mock.c -o mock.o
           ar -rc $CURL_DIR/lib/.libs/libcurl.a mock.o
-          
-          # 编译其他依赖
           cd doubleH3lix && make headless || true
           cd ../Meridian && make all || true
 
-      - name: Build Payload (Strict Makefile Logic)
+      - name: Build Payload
         run: |
           cd glue
-          # 1. 物理创建 Makefile 预期的目录
           mkdir -p obj/c obj/c++
-          
-          # 2. 注入针对 iOS 10.3.3 (A7 芯片) 的补丁
-          # 解决 Xcode 16 强制引入的 __availability_version_check 符号错误
           printf 'extern "C" { int __availability_version_check(int a, char** b) { return 1; } }\n' > src/patch.cpp
           xcrun -sdk iphoneos clang++ -arch arm64 -c src/patch.cpp -o obj/c++/patch.o -miphoneos-version-min=10.0
-          
-          # 3. 按照 Makefile 逻辑调用 make
-          # OBJS_EXT 确保补丁被链接，LDFLAGS 确保老旧系统符号在运行时动态查找
           export JIT=1
           make OBJS_EXT="obj/c++/patch.o" LDFLAGS="-Wl,-undefined,dynamic_lookup"
 
-      - name: Final Package (Strict root/Makefile Logic)
+      - name: Final Package
         working-directory: ./root
         run: |
-          # 此时环境已完全满足 root/Makefile 的所有工具和路径要求
+          # 现在 closure-css 和 closure-js 都能正常工作（虽然是 mock 版本）
           make
 
-      - name: Upload for Linux/armv7 Server
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: TNS-Success-iPad-mini2
-          # 产物就在 root/dist，包含了 payload 和所有静态网页资源
           path: root/dist/
