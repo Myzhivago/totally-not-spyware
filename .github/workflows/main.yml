@@ -20,21 +20,25 @@ jobs:
           brew install closure-compiler
           sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
           
-          # 获取并保存 SDK 路径
+          # 1. 获取 SDK 路径
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK_PATH=$SDK_PATH" >> $GITHUB_ENV
           
-          # 获取编译器运行库所在的目录 (解决 availability 符号错误的关键)
-          # 我们需要告诉链接器去哪里找 libclang_rt.ios.a
-          LIB_PATH=$(dirname $(xcrun --sdk iphoneos --find clang))/../lib/clang/*/lib/darwin
-          echo "CLANG_LIB_PATH=$LIB_PATH" >> $GITHUB_ENV
+          # 2. 核心修复：解析编译器运行库的绝对路径（不带通配符）
+          CLANG_BIN=$(xcrun --sdk iphoneos --find clang)
+          # 这一步通过打印并解析找到真正的目录
+          RT_LIB_PATH=$(dirname $CLANG_BIN)/../lib/clang
+          # 进入该目录找到版本号文件夹，再进入 lib/darwin
+          REAL_PATH=$(find $RT_LIB_PATH -name "lib" -type d | grep "darwin" | head -n 1)
+          
+          echo "解析到的运行库路径: $REAL_PATH"
+          echo "CLANG_RT_PATH=$REAL_PATH" >> $GITHUB_ENV
 
       - name: Build Curl
         run: |
           CURL_DIR=$(ls -d glue/dep/curl-*)
           cd $CURL_DIR
           export CC="xcrun -sdk iphoneos clang"
-          # 增加最低版本要求到 10.0 以匹配项目其他部分
           export CFLAGS="-miphoneos-version-min=10.0 -isysroot ${{ env.SDK_PATH }}"
           ./configure --host=arm-apple-darwin \
                       --with-darwinssl \
@@ -58,9 +62,16 @@ jobs:
         run: |
           cd glue
           export JIT=1
-          # 核心修复：在 LDFLAGS 中加入 -lclang_rt.ios 
-          # 这样链接器就能找到 __availability_version_check
-          make LDFLAGS="-L${{ env.CLANG_LIB_PATH }} -lclang_rt.ios"
+          # 使用解析出的绝对路径，并显式链接 libclang_rt.ios.a
+          # 注意：新版 Xcode 可能叫 libclang_rt.ios.a 或 libclang_rt.apple_ios.a
+          # 这里直接链接绝对路径文件最为稳妥
+          RT_FILE=$(find ${{ env.CLANG_RT_PATH }} -name "libclang_rt.ios.a" | head -n 1)
+          if [ -z "$RT_FILE" ]; then
+            RT_FILE=$(find ${{ env.CLANG_RT_PATH }} -name "libclang_rt.apple_ios.a" | head -n 1)
+          fi
+          
+          echo "链接运行库文件: $RT_FILE"
+          make LDFLAGS="$RT_FILE"
 
       - name: Final Build for Nginx
         working-directory: ./root
