@@ -1,4 +1,4 @@
-name: Build for iOS 10.3.3 (iPad mini 2)
+name: Build for iOS 10.3.3 (Final Fix)
 
 on:
   push:
@@ -15,50 +15,45 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup Environment
+      - name: Setup Tools
         run: |
           brew install closure-compiler
           sudo ln -s /usr/local/bin/closure-compiler /usr/local/bin/closure-js
-          echo "SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
 
-      # 1. 编译针对 iOS 10 的 curl
       - name: Build Curl
         run: |
           cd glue/dep/curl-*
-          # 显式指定 arm64 并将最低版本降至 10.0
-          export CC="xcrun -sdk iphoneos clang -arch arm64"
-          export CFLAGS="-miphoneos-version-min=10.0 -isysroot ${{ env.SDK_PATH }}"
-          ./configure --host=arm-apple-darwin --with-darwinssl --enable-static --disable-shared --with-random=/dev/urandom CC="$CC" CFLAGS="$CFLAGS"
+          export SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          ./configure --host=arm-apple-darwin --with-darwinssl --enable-static --disable-shared --with-random=/dev/urandom \
+            CC="xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=10.0 -isysroot $SDK_PATH"
           make -j$(sysctl -n hw.ncpu)
 
-      # 2. 编译静态库
-      - name: Build Libraries
+      - name: Build Dependencies
         run: |
           cd glue/dep/doubleH3lix && make headless
           cd ../Meridian && make all
 
-      # 3. 核心修复：针对 iOS 10.3.3 的兼容性补丁
-      # 强制在源码中定义缺失符号，并告诉链接器这是一个“弱引用”
-      - name: Patch for iOS 10 Compatibility
+      - name: Patch and Build Payload
         run: |
           cd glue
-          # 创建一个 C++ 文件来承载缺失的符号
-          echo 'extern "C" { int __availability_version_check(int argc, char **argv) { return 1; } }' > src/compat.cpp
-          # 修改 Makefile 确保编译这个补丁文件
-          sed -i '' 's/obj\/c++\/main.o/obj\/c++\/main.o obj\/c++\/compat.o/g' Makefile
-
-      # 4. 编译 Payload
-      - name: Build Payload
-        run: |
-          cd glue
-          export JIT=1
-          # 手动先编译补丁文件
+          # 1. 物理创建必要的目录，防止 "No such file or directory"
+          mkdir -p obj/c obj/c++
+          
+          # 2. 注入缺失符号补丁 (同时处理单/双下划线)
+          printf 'extern "C" { int __availability_version_check(int a, char** b) { return 1; } int _availability_version_check(int a, char** b) { return 1; } }\n' > src/compat.cpp
+          
+          # 3. 手动编译补丁文件 (显式指定输出路径)
           xcrun -sdk iphoneos clang++ -arch arm64 -c src/compat.cpp -o obj/c++/compat.o -miphoneos-version-min=10.0
-          # 关键参数：-Wl,-undefined,dynamic_lookup 允许符号在运行时由 iOS 10 系统提供
-          make LDFLAGS="-Wl,-undefined,dynamic_lookup"
+          
+          # 4. 修改 Makefile：将补丁文件加入链接列表，并强制忽略未定义符号
+          # 我们把 compat.o 塞进链接命令中
+          sed -i '' 's/$(CXX) $(LDFLAGS) -o $@/$(CXX) $(LDFLAGS) obj\/c++\/compat.o -Wl,-undefined,dynamic_lookup -o $@/g' Makefile
+          
+          # 5. 执行编译
+          export JIT=1
+          make
 
-      # 5. 打包前端资源 (用于 Nginx 分发)
-      - name: Final Build
+      - name: Final Package for Linux Nginx
         working-directory: ./root
         run: |
           make
