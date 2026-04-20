@@ -27,11 +27,11 @@ server {
         add_header Content-Disposition "attachment";
     }
 }
+```
 然后运行nginx -t&&nginx -s reload
 3. 设备操作
 进入“设置 -> Safari -> 清除历史记录与网站数据”。
 在 Safari 访问 http或者https://<服务器IP>：<端口>。
-```
 ### Credits
 
 - The final ~~countdown~~ product: [Jake Blair](https://twitter.com/JakeBlair420)
