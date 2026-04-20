@@ -1,4 +1,4 @@
-# Totally Not Spyware (iPad mini 2 优化版)
+# Totally Not Spyware
 
 本项目是针对iOS 10.3.3 (arm64)设备专门编译的网页越狱分发包。可以部署在Nginx、Caddy和Apache等上面
 
