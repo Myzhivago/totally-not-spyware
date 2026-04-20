@@ -1,30 +1,36 @@
-# TotallyNotSpyware
+# Totally Not Spyware (iPad mini 2 优化版)
 
-This program is definitely not spyware.  
-Run it on your 64-bit iOS device as soon as possible.  
-Your compliance will be rewarded.
+本项目是针对iOS 10.3.3 (arm64)设备专门编译的网页越狱分发包。可以部署在Nginx、Caddy和Apache等上面
 
-[**[ Live version at totally-not.spyware.lol ]**](https://totally-not.spyware.lol)
+## 🚀 以Nginx为例部署与运行
 
-### Repo structure & building
+### 1. 获取资源
+- 从 [Releases](../../releases) 下载最新的 `TNS.7z`。
+- 解压到 Linux 服务器的 Web 目录（例如 `/var/www/tns`）。
 
-Frontend and WebKit exploit are in `/root`.  
-Kernel exploit is in `/glue`.  
-Post-exploitation is in `/glue/dep`.
+### 2. Nginx 关键配置 (必须包含二进制下载声明)
+编辑/etc/nginx/sites-enabled/default
+```nginx
+server {
+    listen 80;
+    server_name _; 
+    root /var/www/tns;
+    index index.html;
 
-DoubleH3lix and Meridian can be built independently into static libraries with `make headless` and `make all` respectively, in their directories.  
-Those are then used to build the `payload` in `/glue`, which is the binary that is ran from JIT after the WebKit exploit. Can be built with just a `make`, and will build all dependencies as needed.  
-And that is all finally strung together with the WebKit exploit by running `make` in `/root`, which will again build dependencies as needed.
+    location / {
+        try_files $uri $uri/ =404;
+    }
 
-### Patch
-
-We originally wanted to backport the WebKit patch to 10.x, but ultimately gave up.  
-
-See `/patch` for details, but the gist is:  
-One part of the WebKit bug was incorrect predictions in `JSC::DFG::clobberize`, which is basically a huge switch-case. The fix for that was to re-route some values to blocks that are already used for other values.  
-On the versions we checked, the compiler had generated jump tables for that, so our idea would've been to just find and patch all those jump tables, since the correct code would already be present.  
-The issue is that the values that everything depends on have changed hundreds of times over the lifetime of iOS 10 (yes, much more frequently than there have been iOS releases), and there seem to be no landmarks anywhere nearby in code, so it's virtually impossible for us to determine which values to patch. :(
-
+    # 核心配置：将 payload 和 xz 压缩包作为二进制流分发
+    location ~* ^/(payload|bootstrap/.*\.xz)$ {
+        default_type application/octet-stream;
+        add_header Content-Disposition "attachment";
+    }
+}
+然后运行nginx -t&&nginx -s reload
+3. 设备操作
+进入“设置 -> Safari -> 清除历史记录与网站数据”。
+在 Safari 访问 http或者https://<服务器IP>：<端口>。
 ### Credits
 
 - The final ~~countdown~~ product: [Jake Blair](https://twitter.com/JakeBlair420)
